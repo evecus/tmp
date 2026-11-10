@@ -1,0 +1,23 @@
+
+  sfh — Static File Host
+
+  📁 dir    /workspace/oracle/data
+  🌐 port   :4041
+  🔑 auth   admin:***
+
+  Browse → http://localhost:4041/
+  Manage → http://localhost:4041/update  (needs auth)
+
+  curl API (read — public):
+    curl http://HOST:4041/api/ls
+    curl http://HOST:4041/api/ls?path=/subdir
+    curl http://HOST:4041/api/cat?path=/file.txt
+    curl http://HOST:4041/api/download?path=/file.txt -o file.txt
+
+  curl API (write — requires -u admin:PASS):
+    curl -u admin:PASS -X POST 'http://HOST:4041/api/mkdir?path=/dir'
+    curl -u admin:PASS -T file.txt 'http://HOST:4041/api/upload?path=/&name=file.txt'
+    curl -u admin:PASS -F 'files=@photo.png' 'http://HOST:4041/api/upload?path=/'
+    curl -u admin:PASS -X DELETE 'http://HOST:4041/api/delete?path=/file.txt'
+    curl -u admin:PASS -X POST 'http://HOST:4041/api/move?from=/a.txt&to=/b.txt'
+

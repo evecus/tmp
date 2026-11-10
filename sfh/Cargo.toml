@@ -1,0 +1,15 @@
+[package]
+name = "sfh"
+version = "1.0.0"
+edition = "2021"
+description = "sfh — Static File Host (Rust rewrite)"
+
+[[bin]]
+name = "sfh"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1
+panic = "abort"
