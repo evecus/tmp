@@ -15,7 +15,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use rust_embed::RustEmbed;
+use rust_embed::{Embed, RustEmbed};
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;

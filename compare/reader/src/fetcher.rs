@@ -85,6 +85,29 @@ fn merge_headers(source: Option<&str>, extra: Option<&Value>) -> String {
     serde_json::to_string(&Value::Object(map)).unwrap_or_else(|_| "{}".into())
 }
 
+/// JS 层 `java.connect/get/post/head/ajaxAll` 返回的完整响应。
+/// 对齐 legado `StrResponse`：body()/code()/header(k)/headers()/url()。
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct FetchResponse {
+    pub status: u16,
+    /// 响应头（key 全小写；同名多值以 "," 合并）
+    pub headers: serde_json::Map<String, Value>,
+    pub body: String,
+    pub url: String,
+}
+
+impl FetchResponse {
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| "{}".into())
+    }
+
+    pub fn error(msg: &str) -> Self {
+        let mut m = serde_json::Map::new();
+        m.insert("__err".into(), Value::String(msg.to_string()));
+        Self { status: 0, headers: m, body: String::new(), url: String::new() }
+    }
+}
+
 pub struct Fetcher {
     client: reqwest::Client,
     /// 进程级共享 Cookie jar：异步主链与 JS blocking 回调共用
@@ -223,13 +246,29 @@ impl Fetcher {
     /// 通用同步请求：注入/回写共享 Cookie jar。供 JS java.ajax / fetch 闭包使用。
     /// 完整消费 RequestSpec（method/body/charset/headers），但 retry 固定 0（JS 回调场景）。
     pub fn request_blocking(&self, raw: &str, source_headers: Option<&str>) -> String {
+        self.request_blocking_full(raw, source_headers, None)
+            .map(|r| r.body)
+            .unwrap_or_default()
+    }
+
+    /// 同步请求的完整响应版：供 java.connect/get/post/head/ajaxAll 使用。
+    /// `timeout_override_ms`：JS 显式传入的 callTimeout（毫秒，对齐 okhttp callTimeout 语义）。
+    pub fn request_blocking_full(
+        &self,
+        raw: &str,
+        source_headers: Option<&str>,
+        timeout_override_ms: Option<u64>,
+    ) -> Result<FetchResponse, String> {
         let spec = RequestSpec::parse(raw, source_headers);
+        let timeout_ms = timeout_override_ms.unwrap_or(spec.timeout_secs * 1000).clamp(1, 300_000);
         let mut hm = Self::parse_headers(Some(&spec.headers_json), &spec.url);
         self.cookies.inject(&mut hm, &spec.url);
         let client = match reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(spec.timeout_secs))
-            .danger_accept_invalid_certs(true).build() {
-            Ok(c) => c, Err(_) => return String::new(),
+            .timeout(std::time::Duration::from_millis(timeout_ms))
+            .danger_accept_invalid_certs(true).build()
+        {
+            Ok(c) => c,
+            Err(e) => return Err(format!("HTTP 客户端构建失败: {e}")),
         };
         let req = if spec.method == "POST" {
             client.post(&spec.url).headers(hm).body(spec.body.clone())
@@ -241,13 +280,27 @@ impl Fetcher {
         };
         match req.send() {
             Ok(r) => {
+                let status = r.status().as_u16();
                 let final_url = r.url().to_string();
-                let headers = r.headers().clone();
-                let out = r.bytes().ok().map(|b| decode_bytes(&b, spec.charset.as_deref())).unwrap_or_default();
-                self.cookies.store_response(&final_url, &headers);
-                out
+                let raw_headers = r.headers().clone();
+                self.cookies.store_response(&final_url, &raw_headers);
+                // 响应头 → JSON map（小写 key，多值合并）
+                let mut headers = serde_json::Map::new();
+                for (k, v) in raw_headers.iter() {
+                    let val = v.to_str().unwrap_or("").to_string();
+                    let entry = headers
+                        .entry(k.as_str().to_ascii_lowercase())
+                        .or_insert_with(|| Value::String(val.clone()));
+                    if let Value::String(s) = entry {
+                        if *s != val { *s = format!("{},{}", s, val); }
+                    }
+                }
+                let body = r.bytes().ok()
+                    .map(|b| decode_bytes(&b, spec.charset.as_deref()))
+                    .unwrap_or_default();
+                Ok(FetchResponse { status, headers, body, url: final_url })
             }
-            Err(_) => String::new(),
+            Err(e) => Err(format!("请求 {} 失败: {}", spec.url, e)),
         }
     }
 }

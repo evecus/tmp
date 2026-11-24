@@ -5,7 +5,7 @@ use crate::db::Db;
 use crate::engine::js::{self, new_var_store, JsContext, VarStore};
 use crate::engine::RuleContext;
 use crate::error::{AppError, AppResult};
-use crate::fetcher::Fetcher;
+use crate::fetcher::{FetchResponse, Fetcher};
 use crate::model::{Book, BookChapter, BookSource};
 use futures::future::join_all;
 use serde_json::Value;
@@ -54,11 +54,13 @@ impl BookService {
 
     /// 构造 fetch 闭包：走实例方法以共享 Cookie jar
     fn fetch_closure(&self, source: &BookSource)
-        -> std::sync::Arc<dyn Fn(&str, &str) -> String + Send + Sync>
+        -> std::sync::Arc<dyn Fn(&str, &str, u64) -> Result<FetchResponse, String> + Send + Sync>
     {
         let fetcher = self.fetcher.clone();
         let header = source.header.clone().unwrap_or_default();
-        Arc::new(move |url: &str, _h: &str| fetcher.request_blocking(url, Some(&header)))
+        Arc::new(move |url: &str, _h: &str, timeout: u64| {
+            fetcher.request_blocking_full(url, Some(&header), (timeout != 0).then_some(timeout))
+        })
     }
 
     fn make_context(&self, html: String, base_url: String, source: &BookSource, vars: &VarStore) -> RuleContext {

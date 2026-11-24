@@ -16,7 +16,7 @@ pub struct RuleContext {
     pub js_lib: String,
     /// 与 JS 层共享的变量表（java.put / source.setVariable / 规则 @put 共用）
     pub variables: VarStore,
-    pub fetch: Option<std::sync::Arc<dyn Fn(&str, &str) -> String + Send + Sync>>,
+    pub fetch: Option<crate::engine::js::JsFetchFn>,
     pub cookies: CookieStore,
     pub chapter_title: String,
 }
