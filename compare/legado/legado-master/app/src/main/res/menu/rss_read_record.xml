@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:ignore="AlwaysShowAction">
+
+    <item
+        android:id="@+id/menu_clear"
+        android:icon="@drawable/ic_clear_all"
+        android:title="@string/clear"
+        app:showAsAction="always" />
+
+    <item
+        android:id="@+id/menu_more"
+        android:icon="@drawable/ic_more_vert"
+        android:title="@string/more_menu"
+        app:showAsAction="always">
+        <menu>
+            <item
+                android:id="@+id/menu_enable_record"
+                android:checkable="true"
+                android:title="@string/enable_record"
+                app:showAsAction="never" />
+        </menu>
+    </item>
+
+</menu>
