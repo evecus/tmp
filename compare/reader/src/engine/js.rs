@@ -131,6 +131,43 @@ fn js_cache() -> &'static Mutex<JsCacheMap> {
     JS_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+// ---------------- 文件 API 基础目录与 cacheFile 文本缓存 ----------------
+
+static FILE_BASE_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+/// 设置文件 API 的基础目录（main.rs 用 DATA_DIR/cache 初始化）
+pub fn set_file_base_dir(dir: std::path::PathBuf) {
+    let _ = FILE_BASE_DIR.set(dir);
+}
+
+fn file_base_dir() -> std::path::PathBuf {
+    FILE_BASE_DIR.get().cloned().unwrap_or_else(|| std::path::PathBuf::from("./data/cache"))
+}
+
+static JS_TEXT_CACHE: OnceLock<Mutex<JsCacheMap>> = OnceLock::new();
+
+fn js_text_cache() -> &'static Mutex<JsCacheMap> {
+    JS_TEXT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 从 URL 推断文件后缀（对齐 UrlUtil.getSuffix：取路径段扩展名，非法回退 dat）
+fn url_suffix(url: &str) -> String {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    path.rsplit('.').next()
+        .filter(|s| !s.is_empty() && s.len() <= 5 && s.chars().all(|c| c.is_ascii_alphanumeric()))
+        .unwrap_or("dat")
+        .to_string()
+}
+
+/// 相对 FILE_BASE_DIR 解析路径，拒绝 .. 越界
+fn resolve_under_base(path: &str) -> Option<std::path::PathBuf> {
+    let p = file_base_dir().join(path.trim_start_matches('/'));
+    if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return None;
+    }
+    Some(p)
+}
+
 // ---------------- Android Base64 flags（对齐 android.util.Base64） ----------------
 
 /// flags: NO_PADDING=1, NO_WRAP=2, CRLF=4, URL_SAFE=8；DEFAULT(0) 每 76 字符换行
@@ -349,6 +386,26 @@ const BOOTSTRAP_JS: &str = r#"(function() {
     java.encodeURI = function(s, enc) { return java.__encodeURI(String(s == null ? '' : s), enc || 'UTF-8'); };
     java.htmlFormat = function(s, redirectUrl) { return java.__htmlFormat(String(s == null ? '' : s), redirectUrl == null ? '' : String(redirectUrl)); };
 
+    // ---- 文件 / 繁简 / importScript ----
+    java.downloadFile = function(a, b) {
+        if (b === undefined) return typeof java.__download === 'function' ? java.__download(String(a)) : '';
+        return typeof java.__downloadHex === 'function' ? java.__downloadHex(String(a), String(b)) : '';
+    };
+    java.cacheFile = function(u, t) {
+        return typeof java.__cacheFile === 'function' ? java.__cacheFile(String(u), t || 0) : '';
+    };
+    java.readTxtFile = function(p) {
+        return typeof java.__readTxt === 'function' ? java.__readTxt(String(p)) : '';
+    };
+    java.importScript = function(p) {
+        const path = String(p);
+        const result = path.startsWith('http') ? java.cacheFile(path, 0) : java.readTxtFile(path);
+        if (!result || !result.trim()) throw new Error(path + ' 内容获取失败或者为空');
+        return result;
+    };
+    java.t2s = function(s) { return typeof java.__t2s === 'function' ? java.__t2s(String(s)) : String(s); };
+    java.s2t = function(s) { return typeof java.__s2t === 'function' ? java.__s2t(String(s)) : String(s); };
+
     // ---- 其它 ----
     java.logType = function(v) {
         if (v === null) return 'null';
@@ -384,6 +441,7 @@ fn vars_json(store: &VarStore) -> String {
 }
 
 fn inject_bindings(js: &rquickjs::Ctx<'_>, jc: &JsContext) -> AppResult<()> {
+    use crate::engine::crypto as c;
     js.globals().set("result", jc.result.clone()).ok();
     js.globals().set("baseUrl", jc.base_url.clone()).ok();
     js.globals().set("bookName", jc.book_name.clone()).ok();
@@ -544,23 +602,95 @@ fn inject_bindings(js: &rquickjs::Ctx<'_>, jc: &JsContext) -> AppResult<()> {
     let uuid_fn = Function::new(js.clone(), || -> String { uuid::Uuid::new_v4().to_string() }).ok();
     if let Some(f) = uuid_fn { java.set("randomUUID", f).ok(); }
 
-    // importScript(path)：http(s) 直接抓取，相对路径按书源 URL 解析
-    if let Some(fetch) = &jc.fetch {
-        let base = if jc.source_url.is_empty() { jc.base_url.clone() } else { jc.source_url.clone() };
-        let fetch_imp = fetch.clone();
-        let f = Function::new(js.clone(), move |path: String| -> String {
-            let url = if path.starts_with("http://") || path.starts_with("https://") {
-                path
+    // importScript(path)：http 走 cacheFile，本地路径走 readTxtFile（对齐官方）
+    // 具体实现在 BOOTSTRAP_JS 中组装，依赖 __cacheFile / __readTxt
+
+    // 繁简转换（对齐 ChineseUtils.t2s/s2t；hanconv 内置 OpenCC STCharacters/STPhrases 词典）
+    let t2s_fn = Function::new(js.clone(), |s: String| -> String { hanconv::t2s(s) }).ok();
+    if let Some(f) = t2s_fn { java.set("__t2s", f).ok(); }
+    let s2t_fn = Function::new(js.clone(), |s: String| -> String { hanconv::s2t(s) }).ok();
+    if let Some(f) = s2t_fn { java.set("__s2t", f).ok(); }
+
+    // 文件 API：downloadFile / cacheFile / readTxtFile（文件存于 FILE_BASE_DIR/download）
+    let fetch_dl = jc.fetch.clone();
+    let dl_fn = Function::new(js.clone(), move |url: String| -> String {
+        let Some(fetch) = fetch_dl.as_ref() else { return String::new() };
+        match fetch(&url, "", 0) {
+            Ok(resp) => {
+                let name = format!("{}.{}", c::md5_encode16(&url), url_suffix(&url));
+                let dir = file_base_dir().join("download");
+                if std::fs::create_dir_all(&dir).is_ok()
+                    && std::fs::write(dir.join(&name), resp.body.as_bytes()).is_ok()
+                {
+                    format!("download/{name}")
+                } else {
+                    tracing::debug!(target: "js", "downloadFile 写入失败: {url}");
+                    String::new()
+                }
+            }
+            Err(e) => {
+                tracing::debug!(target: "js", "downloadFile 请求失败: {url} · {e}");
+                String::new()
+            }
+        }
+    }).ok();
+    if let Some(f) = dl_fn { java.set("__download", f).ok(); }
+
+    // downloadFile(content, url)（官方废弃变体）：hex 内容转文件
+    let dl_hex_fn = Function::new(js.clone(), |content: String, url: String| -> String {
+        let suffix = url_suffix(&url);
+        if suffix == "dat" { return String::new(); }
+        let name = format!("{}.{}", c::md5_encode16(&url), suffix);
+        let dir = file_base_dir().join("download");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            match hex::decode(content.trim()) {
+                Ok(b) => {
+                    if std::fs::write(dir.join(&name), b).is_ok() {
+                        return format!("download/{name}");
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+        String::new()
+    }).ok();
+    if let Some(f) = dl_hex_fn { java.set("__downloadHex", f).ok(); }
+
+    // readTxtFile(path)：相对 FILE_BASE_DIR 解析，拒绝越界路径
+    let read_fn = Function::new(js.clone(), |path: String| -> String {
+        match resolve_under_base(&path).and_then(|p| std::fs::read_to_string(p).ok()) {
+            Some(content) => content,
+            None => {
+                tracing::debug!(target: "js", "readTxtFile 读取失败: {path}");
+                String::new()
+            }
+        }
+    }).ok();
+    if let Some(f) = read_fn { java.set("__readTxt", f).ok(); }
+
+    // cacheFile(url, saveTime)：进程级文本缓存，key = md5_16(url)（对齐官方 CacheManager+文件 语义）
+    let fetch_cf = jc.fetch.clone();
+    let cf_fn = Function::new(js.clone(), move |url: String, save_time: f64| -> String {
+        let key = c::md5_encode16(&url);
+        let now = std::time::SystemTime::now();
+        if let Some((cached, exp)) = js_text_cache().lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+            if *exp > now { return cached.clone(); }
+        }
+        let content = fetch_cf.as_ref()
+            .and_then(|fetch| fetch(&url, "", 0).ok())
+            .map(|r| r.body)
+            .unwrap_or_default();
+        if !content.is_empty() {
+            let exp = if save_time > 0.0 {
+                now + std::time::Duration::from_secs(save_time as u64)
             } else {
-                url::Url::parse(&base).ok()
-                    .and_then(|b| b.join(path.trim()).ok())
-                    .map(|u| u.to_string())
-                    .unwrap_or(path)
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1 << 40)
             };
-            fetch_imp(&url, "", 0).map(|r| r.body).unwrap_or_default()
-        }).ok();
-        if let Some(f) = f { java.set("importScript", f).ok(); }
-    }
+            js_text_cache().lock().unwrap_or_else(|e| e.into_inner()).insert(key, (content.clone(), exp));
+        }
+        content
+    }).ok();
+    if let Some(f) = cf_fn { java.set("__cacheFile", f).ok(); }
 
     // java.put / java.get —— 写入共享变量表（Rust 闭包，真正回传给规则层与落库）
     let put_store = jc.variables.clone();
@@ -967,6 +1097,83 @@ mod tests {
             eval("java.ajaxAll(['http://1.com','http://2.com']).map(r => r.body()).join(',')", &c).unwrap(),
             "body:http://1.com:timeout=0,body:http://2.com:timeout=0"
         );
+    }
+
+    // 文件类测试辅助：共享目录 + 串行（FILE_BASE_DIR 为进程级 OnceLock）
+    static FILE_TEST_LOCK: Mutex<()> = Mutex::new(());
+    static FILE_TEST_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+    fn file_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        FILE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    fn file_test_dir() -> std::path::PathBuf {
+        FILE_TEST_DIR.get_or_init(|| {
+            let d = std::env::temp_dir().join(format!("reader_js_ftest_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            d
+        }).clone()
+    }
+
+    #[test]
+    fn java_t2s_s2t() {
+        let c = ctx();
+        assert_eq!(eval("java.t2s('漢字與詞語')", &c).unwrap(), "汉字与词语");
+        assert_eq!(eval("java.s2t('汉字与词语')", &c).unwrap(), "漢字與詞語");
+        // 单字与词组（官方 OpenCC t2s = STCharacters + STPhrases，軟體 为字级转换结果）
+        assert_eq!(eval("java.t2s('軟體')", &c).unwrap(), "软体");
+        // 非中文原样返回
+        assert_eq!(eval("java.t2s('abc123')", &c).unwrap(), "abc123");
+    }
+
+    #[test]
+    fn java_file_api_roundtrip() {
+        // FILE_BASE_DIR 是进程级 OnceLock：文件类测试共享同一目录并串行执行
+        let _guard = file_test_guard();
+        let tmp = file_test_dir();
+        set_file_base_dir(tmp.clone());
+        let c = ctx();
+
+        // downloadFile(content, url)：hex 转文件
+        let path = eval("java.downloadFile(java.hexEncodeToString('hello-bin'), 'http://x.com/a.bin')", &c).unwrap();
+        assert!(path.starts_with("download/"), "got: {path}");
+        let saved = std::fs::read(tmp.join(&path)).unwrap();
+        assert_eq!(saved, b"hello-bin");
+
+        // readTxtFile：读取刚写入的文件
+        assert_eq!(eval(&format!("java.readTxtFile('{}')", path), &c).unwrap(), "hello-bin");
+        // 越界路径返回空
+        assert_eq!(eval("java.readTxtFile('../escape.txt')", &c).unwrap(), "");
+
+        // importScript 本地文件：内容非空时返回；空时抛错
+        assert_eq!(eval(&format!("java.importScript('{}')", path), &c).unwrap(), "hello-bin");
+        let r = eval("java.importScript('not-exist.js')", &c);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn java_cache_file_with_stub_fetch() {
+        let _guard = file_test_guard();
+        let tmp = file_test_dir();
+        set_file_base_dir(tmp.clone());
+        let mut c = ctx();
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cnt = counter.clone();
+        c.fetch = Some(Arc::new(move |_raw: &str, _h: &str, _t: u64| {
+            cnt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(FetchResponse {
+                status: 200,
+                headers: serde_json::Map::new(),
+                body: "script-content".into(),
+                url: String::new(),
+            })
+        }));
+        // 两次调用只应发起一次请求（进程级缓存命中）
+        eval("java.cacheFile('http://s.com/lib.js'); java.cacheFile('http://s.com/lib.js')", &c).unwrap();
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(eval("java.cacheFile('http://s.com/lib.js')", &c).unwrap(), "script-content");
+        // importScript http 路径复用 cacheFile
+        assert_eq!(eval("java.importScript('http://s.com/lib.js')", &c).unwrap(), "script-content");
     }
 
     #[test]
