@@ -17,6 +17,7 @@ pub struct RuleContext {
     /// 与 JS 层共享的变量表（java.put / source.setVariable / 规则 @put 共用）
     pub variables: VarStore,
     pub fetch: Option<crate::engine::js::JsFetchFn>,
+    pub webview: Option<crate::engine::js::JsWebviewFn>,
     pub cookies: CookieStore,
     pub chapter_title: String,
 }
@@ -25,7 +26,7 @@ impl RuleContext {
     pub fn new(html: impl Into<String>, base_url: impl Into<String>) -> Self {
         Self {
             html: html.into(), base_url: base_url.into(), js_lib: String::new(),
-            variables: new_var_store(), fetch: None, cookies: CookieStore::new(),
+            variables: new_var_store(), fetch: None, webview: None, cookies: CookieStore::new(),
             chapter_title: String::new(),
         }
     }
@@ -58,6 +59,7 @@ impl RuleContext {
             chapter_title: self.chapter_title.clone(),
             variables: self.variables.clone(),
             fetch: self.fetch.clone(),
+            webview: self.webview.clone(),
             cookies: self.cookies.clone(),
             key: self.var("key").unwrap_or_default(),
             page: self.var("page").and_then(|v| v.parse().ok()).unwrap_or(1),
@@ -99,6 +101,7 @@ impl RuleContext {
                 sub.js_lib = self.js_lib.clone();
                 sub.variables = self.variables.clone();
                 sub.fetch = self.fetch.clone();
+                sub.webview = self.webview.clone();
                 sub.cookies = self.cookies.clone();
                 let selector = sub.expand_segments(piece)?;
                 sub.select_elements(&selector, piece.mode)?
@@ -130,6 +133,7 @@ impl RuleContext {
                 sub.js_lib = self.js_lib.clone();
                 sub.variables = self.variables.clone(); // 共享同一张表，JS 写入自动可见
                 sub.fetch = self.fetch.clone();
+                sub.webview = self.webview.clone();
                 sub.cookies = self.cookies.clone();
                 let values = sub.get_string_list(rule)?;
                 for v in values { if !v.is_empty() { out.push(v); } }

@@ -8,6 +8,7 @@ mod error;
 mod fetcher;
 mod model;
 mod state;
+mod webview;
 
 use crate::engine::js as js_engine;
 

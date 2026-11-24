@@ -63,12 +63,20 @@ impl BookService {
         })
     }
 
+    /// 构造 webview 闭包：走全局 headless Chrome 渲染（对齐 java.webView*）
+    fn webview_closure(&self) -> crate::engine::js::JsWebviewFn {
+        Arc::new(|mode: u8, html: &str, url: &str, js: &str, regex: &str| {
+            crate::webview::call(mode, html, url, js, regex)
+        })
+    }
+
     fn make_context(&self, html: String, base_url: String, source: &BookSource, vars: &VarStore) -> RuleContext {
         let mut ctx = RuleContext::new(html, base_url);
         ctx.js_lib = source.js_lib.clone().unwrap_or_default();
         ctx.variables = vars.clone();
         ctx.cookies = self.fetcher.cookies.clone();
         ctx.fetch = Some(self.fetch_closure(source));
+        ctx.webview = Some(self.webview_closure());
         ctx
     }
 
@@ -81,6 +89,7 @@ impl BookService {
             variables: vars.clone(),
             cookies: self.fetcher.cookies.clone(),
             fetch: Some(self.fetch_closure(source)),
+            webview: Some(self.webview_closure()),
             ..Default::default()
         }
     }

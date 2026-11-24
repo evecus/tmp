@@ -23,6 +23,10 @@ pub fn new_var_store() -> VarStore { Arc::new(Mutex::new(HashMap::new())) }
 /// JS 层网络回调：返回完整响应（status/headers/body/url），timeout 为毫秒（0 = 用默认）。
 pub type JsFetchFn = Arc<dyn Fn(&str, &str, u64) -> Result<FetchResponse, String> + Send + Sync>;
 
+/// JS 层 WebView 回调：(mode, html, url, js, regex)。
+/// mode: 0=webView（js 结果/整页源码）1=webViewGetSource（请求嗅探）2=webViewGetOverrideUrl（跳转嗅探）。
+pub type JsWebviewFn = Arc<dyn Fn(u8, &str, &str, &str, &str) -> Result<String, String> + Send + Sync>;
+
 pub struct JsContext {
     pub js_lib: String,
     pub result: String,
@@ -34,6 +38,8 @@ pub struct JsContext {
     /// 共享变量（与规则层 RuleContext 同一张表）
     pub variables: VarStore,
     pub fetch: Option<JsFetchFn>,
+    /// WebView 渲染回调（java.webView* / AnalyzeUrl webView:true）
+    pub webview: Option<JsWebviewFn>,
     /// jsUrl 专用：搜索关键字、页码
     pub key: String,
     pub page: i32,
@@ -49,7 +55,7 @@ impl Default for JsContext {
             js_lib: String::new(), result: String::new(), base_url: String::new(),
             source_url: String::new(), source_name: String::new(), book_name: String::new(),
             chapter_title: String::new(), variables: new_var_store(), fetch: None,
-            key: String::new(), page: 1, cookies: CookieStore::new(),
+            webview: None, key: String::new(), page: 1, cookies: CookieStore::new(),
             login_info: new_var_store(),
         }
     }
@@ -406,6 +412,21 @@ const BOOTSTRAP_JS: &str = r#"(function() {
     java.t2s = function(s) { return typeof java.__t2s === 'function' ? java.__t2s(String(s)) : String(s); };
     java.s2t = function(s) { return typeof java.__s2t === 'function' ? java.__s2t(String(s)) : String(s); };
 
+    // ---- WebView（官方 webView / webViewGetSource / webViewGetOverrideUrl）----
+    const hasWv = typeof java.__webview === 'function';
+    java.webView = function(html, url, js) {
+        if (!hasWv) return '';
+        return java.__webview(0, html == null ? '' : String(html), url == null ? '' : String(url), js == null ? '' : String(js), '');
+    };
+    java.webViewGetSource = function(html, url, js, sourceRegex) {
+        if (!hasWv) return '';
+        return java.__webview(1, html == null ? '' : String(html), url == null ? '' : String(url), js == null ? '' : String(js), sourceRegex == null ? '' : String(sourceRegex));
+    };
+    java.webViewGetOverrideUrl = function(html, url, js, overrideUrlRegex) {
+        if (!hasWv) return '';
+        return java.__webview(2, html == null ? '' : String(html), url == null ? '' : String(url), js == null ? '' : String(js), overrideUrlRegex == null ? '' : String(overrideUrlRegex));
+    };
+
     // ---- 其它 ----
     java.logType = function(v) {
         if (v === null) return 'null';
@@ -499,8 +520,22 @@ fn inject_bindings(js: &rquickjs::Ctx<'_>, jc: &JsContext) -> AppResult<()> {
         java.set("__ajaxAll", f).ok();
     }
 
+    // WebView：__webview(mode, html, url, js, regex)；失败时返回空串（官方返回 null）
+    if let Some(wv) = &jc.webview {
+        let wv_fn = wv.clone();
+        let f = Function::new(js.clone(), move |mode: f64, html: String, url: String, script: String, regex: String| -> String {
+            match wv_fn(mode as u8, &html, &url, &script, &regex) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::debug!(target: "js", "webView 调用失败: {e}");
+                    String::new()
+                }
+            }
+        }).map_err(|e| AppError::internal(format!("__webview: {e}")))?;
+        java.set("__webview", f).ok();
+    }
+
     // base64（对齐 Android Base64 flags）/ log / getString
-    use base64::Engine;
     let b64_enc_fn = Function::new(js.clone(), |s: String, flags: f64| -> String {
         android_b64_encode(s.as_bytes(), flags as i32)
     }).ok();
@@ -1174,6 +1209,28 @@ mod tests {
         assert_eq!(eval("java.cacheFile('http://s.com/lib.js')", &c).unwrap(), "script-content");
         // importScript http 路径复用 cacheFile
         assert_eq!(eval("java.importScript('http://s.com/lib.js')", &c).unwrap(), "script-content");
+    }
+
+    #[test]
+    fn java_webview_bindings_with_stub() {
+        let mut c = ctx();
+        c.webview = Some(Arc::new(|mode: u8, html: &str, url: &str, js: &str, regex: &str| {
+            Ok(format!("m{}|{}|{}|{}|{}", mode, html, url, js, regex))
+        }));
+        assert_eq!(
+            eval("java.webView('<b/>', 'http://a', 'doc.x')", &c).unwrap(),
+            "m0|<b/>|http://a|doc.x|"
+        );
+        assert_eq!(
+            eval("java.webViewGetSource(null, 'http://b', '', '.*js')", &c).unwrap(),
+            "m1||http://b||.*js"
+        );
+        assert_eq!(
+            eval("java.webViewGetOverrideUrl('', 'http://c', null, 'target')", &c).unwrap(),
+            "m2||http://c||target"
+        );
+        // 无 webview 闭包：优雅返回空串（无浏览器环境降级）
+        assert_eq!(eval("java.webView('x', 'u', 'j')", &ctx()).unwrap(), "");
     }
 
     #[test]
