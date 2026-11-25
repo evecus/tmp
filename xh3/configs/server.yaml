@@ -1,0 +1,35 @@
+# xh3 服务端配置：QUIC (H3) 上的 VLESS + XHTTP，未匹配请求回退到真实静态站
+# 启动：cargo run --release -- server.yaml
+#
+# 注意：dev 证书是自签的（configs/cert.pem），生产环境请换成
+# 真实域名的 ACME 证书（参考 examples/certificates_acme.yaml）。
+
+- address: "0.0.0.0:443"
+  transport: quic
+  quic_settings:
+    cert: configs/cert.pem
+    key: configs/key.pem
+  protocol:
+    type: xhttp
+    path: /tunnel
+    # 核心：不匹配隧道的请求（浏览器/主动探测）返回真实网站内容
+    fallback_dir: site
+    protocol:
+      type: vless
+      user_id: "550e8400-e29b-41d4-a716-446655440000"
+
+# TCP + TLS 的 H1/H2 服务，同一隧道配置 + 同一真站回退，
+# 便于用普通 HTTP 客户端（curl/浏览器）验证 fallback 形态。
+- address: "0.0.0.0:8443"
+  protocol:
+    type: tls
+    default_target:
+      cert: configs/cert.pem
+      key: configs/key.pem
+      protocol:
+        type: xhttp
+        path: /tunnel
+        fallback_dir: site
+        protocol:
+          type: vless
+          user_id: "550e8400-e29b-41d4-a716-446655440000"

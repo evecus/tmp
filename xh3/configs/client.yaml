@@ -1,0 +1,23 @@
+# xh3 客户端配置：SOCKS5 入站 → QUIC (H3) XHTTP → 远端服务器
+# 启动：cargo run --release -- client.yaml
+
+- address: "127.0.0.1:1080"
+  protocol:
+    type: socks
+  rules:
+    - masks: "0.0.0.0/0"
+      client_chains:
+        - - address: "127.0.0.1:443"
+            transport: quic
+            quic_settings:
+              sni_hostname: xh3.local
+              # dev 自签证书跳过校验；生产环境用真实域名证书后改为 true（或去掉此项）
+              verify: false
+            protocol:
+              type: xhttp
+              path: /tunnel
+              http_version: h3
+              mode: stream-one
+              protocol:
+                type: vless
+                user_id: "550e8400-e29b-41d4-a716-446655440000"
