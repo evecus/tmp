@@ -1,243 +1,51 @@
 [package]
-name = "shoes"
-version = "0.3.8"
-publish = false # Cargo strips fork patches from crates.io packages.
-edition = "2024"
-rust-version = "1.96.0"
-autotests = false
-autobenches = false
-license = "MIT"
-description = "A multi-protocol proxy server."
-homepage = "https://github.com/cfal/shoes/"
-repository = "https://github.com/cfal/shoes/"
-readme = "README.md"
-keywords = ["proxy", "proxy-server", "shadowsocks", "v2ray", "vmess"]
-categories = ["command-line-utilities", "network-programming"]
-
-[workspace]
-members = ["tests/support"]
-resolver = "3"
-
-[patch.crates-io]
-# REALITY patches on stable rustls: reality/0.23.46-f04804fa1334. Pins the patched commit, not the branch.
-rustls = { git = "https://github.com/cfal/rustls", rev = "f1a23c187330386e9e7f14a21dbae368034dc430" }
-blake3 = { git = "https://github.com/cfal/BLAKE3", rev = "5bd8a7ef060bac222502a449bb89b7bdcdb8ec09" }
-# Bounds buffered H3 frames before payload reads and skips unknown frames incrementally.
-h3 = { git = "https://github.com/cfal/h3", rev = "90e3013710e35143d1969dc3421f5951fbe49966" }
-h3-quinn = { git = "https://github.com/cfal/h3", rev = "90e3013710e35143d1969dc3421f5951fbe49966" }
-# Preserves transport failover, bounded receive progress and scoped DoH driver retirement.
-hickory-net = { git = "https://github.com/cfal/hickory-dns", rev = "93435e55f102ee637eadca89126be85931a804f3" }
-hickory-proto = { git = "https://github.com/cfal/hickory-dns", rev = "93435e55f102ee637eadca89126be85931a804f3" }
-hickory-resolver = { git = "https://github.com/cfal/hickory-dns", rev = "93435e55f102ee637eadca89126be85931a804f3" }
-# Includes nix-rust/nix#2821 for iOS socket feature compatibility.
-nix = { git = "https://github.com/nix-rust/nix", rev = "3eae6d68ec6382fef7b38cd58f97458e59a71af9" }
-# Preserves TCP ACK sequences during retransmission.
-smoltcp = { git = "https://github.com/cfal/smoltcp", rev = "7ef43e497f575cb0340a43e4f414f0f0b8760bf6" }
-# Vendored: rust-version metadata stripped (declared 1.99.1, no actual 1.97+ features used).
-tendns = { path = "vendor/tendns" }
-
-[lib]
-name = "shoes"
-# rlib = Rust library (for Rust dependencies)
-# cdylib = C dynamic library (.so on Linux/Android, .dylib on macOS)
-# staticlib = C static library (.a) - required for iOS
-crate-type = ["rlib", "cdylib", "staticlib"]
-
-[[bin]]
-name = "shoes"
-path = "src/main.rs"
-
-[features]
-default = []
-ffi = []  # Enable FFI module for non-Android builds
-integration-tests = []
-optional-peer-tests = ["integration-tests"]
-external-network-tests = ["integration-tests"]
-privileged-tests = ["integration-tests"]
-stress-tests = ["integration-tests"]
-
-[[test]]
-name = "process_contract"
-path = "tests/process_contract.rs"
-
-[[test]]
-name = "rule_allocation"
-path = "tests/rule_allocation.rs"
-
-[[test]]
-name = "retention_allocation"
-path = "tests/retention_allocation.rs"
-
-[[test]]
-name = "matcher_invariants"
-path = "tests/matcher_invariants.rs"
-
-[[test]]
-name = "rule_properties"
-path = "tests/rule_properties.rs"
-
-[[test]]
-name = "integration"
-path = "tests/integration.rs"
-required-features = ["integration-tests"]
-
-[[test]]
-name = "external_network"
-path = "tests/external_network.rs"
-required-features = ["external-network-tests"]
-
-[[test]]
-name = "optional_peer"
-path = "tests/optional_peer.rs"
-required-features = ["optional-peer-tests"]
-
-[[test]]
-name = "xhttp_interop"
-path = "tests/xhttp_interop.rs"
-required-features = ["integration-tests"]
-
-[[test]]
-name = "ws_early_data"
-path = "tests/ws_early_data.rs"
-required-features = ["integration-tests"]
-
-[[test]]
-name = "reality_interop"
-path = "tests/reality_interop.rs"
-required-features = ["optional-peer-tests"]
-
-[[test]]
-name = "vless_encryption_interop"
-path = "tests/vless_encryption_interop.rs"
-required-features = ["optional-peer-tests"]
-
-[[test]]
-name = "privileged"
-path = "tests/privileged.rs"
-required-features = ["privileged-tests"]
-
-[[test]]
-name = "stress"
-path = "tests/stress.rs"
-required-features = ["stress-tests"]
+name = "xh3"
+version = "0.1.0"
+edition = "2021"
+description = "A minimal HTTP/3 (QUIC) proxy: real-site camouflage server + SOCKS5 client (XHTTP-style sessions over h3)"
 
 [dependencies]
-aho-corasick = "1"
-anyhow = "1"
-async-trait = "*"
-aws-lc-rs = { version = "*", default-features = false }
-base64 = "*"
-blake2 = "0.11"
-blake3 = "*"
-bytes = "*"
-chrono = "*"
-dashmap = "*"
-digest = "*"
-etherparse = "*"
-futures = "*"
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-ruzstd = "0.9.1"
-prost = "0.14.4"
-yaml-rust2 = { version = "0.13", default-features = false }
-h2 = "*"
-h3 = { version = "*", features = ["i-implement-a-third-party-backend-and-opt-into-breaking-changes"] }
-h3-quinn = "*"
-hickory-resolver = { version = "*", default-features = false, features = ["tokio", "tls-aws-lc-rs", "https-aws-lc-rs", "h3-aws-lc-rs"] }
-http = "*"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time", "fs", "signal"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls", "log"] }
+h3 = { version = "0.0.8", features = ["i-implement-a-third-party-backend-and-opt-into-breaking-changes"] }
+h3-quinn = "0.0.10"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12", "dangerous_configuration"] }
+sha2 = "0.10"
+rustls-pki-types = "1"
+rustls-pemfile = "2"
+webpki-roots = "1"
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+http = "1"
 httpdate = "1"
-http-body-util = "*"
-httparse = "*"
-hyper = { version = "*", features = ["client", "server", "http1", "http2"] }
-hyper-util = { version = "*", features = ["tokio", "server"] }
-hyper-tungstenite = "0.30.0"
-memory-stats = "1.2.0"
-indexmap = "*"
-instant-acme = { version = "=0.8.5", default-features = false, features = ["aws-lc-rs", "rcgen", "time", "x509-parser"] }
-ipnetwork = { version = "0.21", features = ["serde"] }
-libc = "*"
-log = { version = "*", features = ["std", "release_max_level_info"] }
-lru = "*"
-md-5 = "*"
-memchr = "*"
-mime_guess = "*"
-ml-kem = { version = "0.3.4", features = ["zeroize"] }
-notify = "*"
-# 0.13's futex_time64 probe triggers SIGSYS on 32-bit Android API 26-29.
-parking_lot = "0.12.5"
-percent-encoding = "*"
-quinn = { version = "*", default-features = false, features = ["log", "runtime-tokio", "rustls-aws-lc-rs"] }
-quinn-proto = { version = "0.11", default-features = false }
-rand = "0.10"
-rand_core = "0.10"
-rcgen = { version = "*", default-features = false, features = ["aws_lc_rs", "pem"] }
-rust-argon2 = "*"
-rustc-hash = "*"
-regex = { version = "1", default-features = false, features = ["std", "perf"] }
-regex-automata = { version = "0.4", default-features = false, features = ["std", "syntax", "meta", "perf"] }
-rustls = "=0.23.46"
-serde = { version = "*", features = ["derive", "std"] }
-serde_json = { version = "*", features = ["preserve_order"] }
-serde_yaml = "*"
-shake = "*"
-smoltcp = { version = "*", default-features = false, features = ["std", "log", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-icmp", "auto-icmp-echo-reply", "socket-udp", "socket-tcp", "socket-tcp-cubic", "phy-tuntap_interface", "assembler-max-segment-count-32", "segmentation-offload"] }
-socket2 = { version = "*", features = ["all"] }
-sntpc = { version = "=0.11.0", default-features = false }
-subtle = "*"
-tendns = { version = "0.2", default-features = false }
-tokio = { version = "*", features = [
-    "fs",
-    "io-util",
-    "macros",
-    "net",
-    "process",
-    "rt-multi-thread",
-    "signal",
-    "sync",
-    "time",
-] }
-tokio-util = { version = "*", features = ["time", "io", "rt"] }
-tracing = { version = "0.1", default-features = false, features = ["release_max_level_info"] }
-tun = { version = "*", features = ["async"] }
-url = "*"
-uuid = "1"
-webpki-roots = { version = "*" }
-x509-parser = { version = "*", default-features = false, features = ["verify-aws"] }
-zeroize = "*"
+bytes = "1"
+uuid = { version = "1", features = ["v4"] }
+dashmap = "6"
+include_dir = "0.7"
+mime_guess = "2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+rand = "0.8"
+base64 = "0.22"
+tokio-util = { version = "0.7", features = ["codec"] }
 
 [dev-dependencies]
-tokio = { version = "*", features = ["test-util"] }
-rcgen = { version = "*", default-features = false, features = ["aws_lc_rs", "pem", "x509-parser"] }
-shoes-test-support = { path = "tests/support" }
-tempfile = "*"
-tokio-rustls = "*"
 
-[target.'cfg(unix)'.dependencies]
-gotatun = { version = "*", default-features = false, features = ["device", "aws-lc-rs"] }
+[lib]
+name = "xh3"
+path = "src/lib.rs"
 
-[target.'cfg(not(target_has_atomic = "64"))'.dependencies]
-portable-atomic = { version = "1", features = ["fallback"] }
+[[bin]]
+name = "xh3-server"
+path = "src/bin/server.rs"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-rtnetlink = "0.24"
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-nftables = "0.6.3"
-
-[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-hickory-resolver = { version = "*", default-features = false, features = ["system-config"] }
-
-# jemalloc for better memory performance (not supported on Windows MSVC, iOS, or Android)
-[target.'cfg(not(any(target_env = "msvc", target_os = "ios", target_os = "android")))'.dependencies]
-tikv-jemallocator = "*"
-
-[target.'cfg(target_os = "android")'.dependencies]
-android_logger = "*"
-jni = "0.22"
-ndk-sys = "*"
+[[bin]]
+name = "xh3-client"
+path = "src/bin/client.rs"
 
 [profile.release]
 opt-level = 3
-lto = "fat"
-strip = true
-
-
+lto = "thin"
